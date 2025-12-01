@@ -12,7 +12,7 @@ import zipfile
 import altair as alt
 
 # --- 1. 系統設定 ---
-st.set_page_config(page_title="台彩數據中心 v19.1 (完整修復版)", page_icon="🎱", layout="wide")
+st.set_page_config(page_title="台彩數據中心 v19.2 (語法修正版)", page_icon="🎱", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 2. 資料路徑 ---
@@ -33,7 +33,8 @@ for z_file in zip_files:
             if len(glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)) < 2:
                 with zipfile.ZipFile(z_file, 'r') as zip_ref:
                     zip_ref.extractall(DATA_DIR)
-    except: pass
+    except:
+        pass
 
 # --- 3. 遊戲設定 ---
 GAME_CONFIG = {
@@ -139,7 +140,6 @@ def process_bulk_files(uploaded_files, progress_bar):
         if rows:
             cfg = GAME_CONFIG[game]
             if game == "賓果賓果":
-                # 賓果直接存入獨立 DB
                 new_df = pd.DataFrame(rows, columns=cfg["cols"])
                 if os.path.exists(BINGO_DB_FILE):
                     try:
@@ -149,13 +149,3 @@ def process_bulk_files(uploaded_files, progress_bar):
                 else: final = new_df
                 final.drop_duplicates(subset=['Date', 'Period'], keep='last', inplace=True)
                 final.sort_values(by=['Date', 'Period'], inplace=True)
-                final.to_csv(BINGO_DB_FILE, index=False)
-            else:
-                new_filename = f"Upload_{game}_{int(time.time())}.csv"
-                pd.DataFrame(rows, columns=cfg["cols"]).to_csv(os.path.join(DATA_DIR, new_filename), index=False)
-            results[game] += len(rows)
-    return results
-
-def crawl_bingo_slowly(target_date=None):
-    if target_date is None: target_date = datetime.now().strftime("%Y-%m-%d")
-    dt = datetime.strptime(target_date, "%Y-%m-%
