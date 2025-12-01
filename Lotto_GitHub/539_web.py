@@ -9,17 +9,32 @@ from datetime import datetime
 import glob
 import time
 import altair as alt
+import zipfile
 
 # --- 1. 系統設定 ---
-st.set_page_config(page_title="台彩數據中心 v15.0 (戰情紀錄版)", page_icon="📝", layout="wide")
+st.set_page_config(page_title="台彩數據中心 v16.1 (強力讀取版)", page_icon="📂", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 2. 資料路徑 ---
+# --- 2. 資料路徑與自動解壓 (v16.1 升級) ---
 DATA_DIR = "data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-LOG_FILE = os.path.join(DATA_DIR, "prediction_log.csv") # 預測紀錄檔
+# 核心升級：自動搜尋目錄下所有的 .zip 檔案並解壓縮
+# 這樣您可以上傳 data1.zip, data2.zip 分開傳，避開 25MB 限制
+zip_files = glob.glob("*.zip") + glob.glob(os.path.join(DATA_DIR, "*.zip"))
+
+for z_file in zip_files:
+    try:
+        # 檢查是否已經解壓過 (簡單判斷：如果 zip 很大，但資料夾是空的)
+        # 這裡我們採取「每次啟動嘗試解壓」策略，因為 Streamlit Cloud 重啟後是乾淨的
+        with zipfile.ZipFile(z_file, 'r') as zip_ref:
+            zip_ref.extractall(DATA_DIR)
+            print(f"成功解壓縮: {z_file}")
+    except Exception as e:
+        print(f"解壓縮失敗 {z_file}: {e}")
+
+LOG_FILE = os.path.join(DATA_DIR, "prediction_log.csv")
 
 # --- 3. 遊戲設定 ---
 GAME_CONFIG = {
@@ -65,6 +80,7 @@ def detect_game_type(filename, df_head):
 def process_bulk_files(uploaded_files):
     results = {g: 0 for g in GAME_CONFIG.keys()}
     temp_storage = {g: [] for g in GAME_CONFIG.keys()}
+    
     for up_file in uploaded_files:
         try:
             try: df = pd.read_csv(up_file, encoding='cp950')
@@ -73,9 +89,11 @@ def process_bulk_files(uploaded_files):
                 except: 
                     up_file.seek(0)
                     df = pd.read_csv(up_file, encoding='utf-8')
+            
             df.columns = [c.strip() for c in df.columns]
             game_type = detect_game_type(up_file.name, df.head(1))
             if not game_type: continue
+            
             cfg = GAME_CONFIG[game_type]
             for _, row in df.iterrows():
                 try:
@@ -91,6 +109,7 @@ def process_bulk_files(uploaded_files):
                     if len(entry) == len(cfg["cols"]): temp_storage[game_type].append(entry)
                 except: continue
         except: continue
+
     for game, rows in temp_storage.items():
         if rows:
             cfg = GAME_CONFIG[game]
@@ -103,21 +122,25 @@ def process_bulk_files(uploaded_files):
 def load_all_data(game_name):
     if game_name not in GAME_CONFIG: return pd.DataFrame()
     cfg = GAME_CONFIG[game_name]
-    all_files = glob.glob(os.path.join(DATA_DIR, "*.csv"))
+    
+    # 遞迴讀取所有 CSV
+    all_files = glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)
     merged_data = []
     
-    # 排除掉 log 檔
     target_files = [f for f in all_files if "prediction_log.csv" not in f]
 
     for file_path in target_files:
         filename = os.path.basename(file_path)
-        if any(k in filename for k in cfg["keywords"]):
+        # 簡單過濾：檔名包含關鍵字，且不包含 "賓果" (排除大檔案)
+        if any(k in filename for k in cfg["keywords"]) and "賓果" not in filename:
             try:
                 try: df = pd.read_csv(file_path, encoding='cp950')
                 except: 
                     try: df = pd.read_csv(file_path, encoding='utf-8')
                     except: continue
+                
                 df.columns = [c.strip() for c in df.columns]
+                
                 if '開獎日期' in df.columns:
                     for _, row in df.iterrows():
                         try:
@@ -138,6 +161,7 @@ def load_all_data(game_name):
                     for _, row in temp_df.iterrows():
                         if len(row) == len(cfg["cols"]): merged_data.append(row.tolist())
             except: continue
+
     if merged_data:
         final_df = pd.DataFrame(merged_data, columns=cfg["cols"])
         final_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
@@ -186,15 +210,12 @@ def crawl_daily_web(game_name):
         return len(new_rows)
     return 0
 
-# --- 5. 紀錄存檔模組 (V15 新增) ---
+# --- 5. 紀錄存檔模組 ---
 
 def save_prediction_log(game_name, candidates):
-    """將預測結果存入 CSV"""
     log_data = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
     for i, cand in enumerate(candidates):
-        # 將號碼 list 轉成字串 "01, 05, 10..."
         nums_str = ", ".join([f"{n:02d}" for n in cand['n']])
         row = {
             "Timestamp": timestamp,
@@ -203,28 +224,22 @@ def save_prediction_log(game_name, candidates):
             "Numbers": nums_str,
             "Error": f"{cand['e']:.4f}",
             "Hit_Repeats": str(cand.get('r', [])),
-            "Note": cand.get('note', '') # 如果有天選標記
+            "Note": cand.get('note', '')
         }
         log_data.append(row)
     
     df_log = pd.DataFrame(log_data)
-    
-    # 如果檔案存在，讀取並合併 (追加在後面)
     if os.path.exists(LOG_FILE):
         try:
             old_log = pd.read_csv(LOG_FILE)
             df_final = pd.concat([old_log, df_log], ignore_index=True)
-        except:
-            df_final = df_log
-    else:
-        df_final = df_log
-        
-    df_final.to_csv(LOG_FILE, index=False, encoding='utf-8-sig') # 使用 sig 方便 Excel 開啟
+        except: df_final = df_log
+    else: df_final = df_log
+    df_final.to_csv(LOG_FILE, index=False, encoding='utf-8-sig')
 
 def load_prediction_log():
     if os.path.exists(LOG_FILE):
-        try:
-            return pd.read_csv(LOG_FILE)
+        try: return pd.read_csv(LOG_FILE)
         except: return pd.DataFrame()
     return pd.DataFrame()
 
@@ -242,7 +257,6 @@ def search_for_miracle_strategy(df, cfg, search_depth=50):
         target_draw = set(df_nums.iloc[i].values)
         train_data = df_nums.iloc[:i]
         if len(train_data) < 30: continue
-        
         last_draw = train_data.iloc[-1].values
         drag_counts = pd.Series(0.0, index=all_range)
         data_matrix = train_data.values
@@ -254,7 +268,6 @@ def search_for_miracle_strategy(df, cfg, search_depth=50):
                 counts = pd.Series(next_draws.flatten()).value_counts().reindex(all_range, fill_value=0)
                 drag_counts = drag_counts.add(counts, fill_value=0)
         prob_banlu = drag_counts / drag_counts.sum() if drag_counts.sum() > 0 else pd.Series(1/len(all_range), index=all_range)
-        
         freq_recent = pd.Series(train_data.tail(30).values.flatten()).value_counts().sort_index().reindex(all_range, fill_value=0)
         prob_recent = (freq_recent + 0.1) / (freq_recent.sum() + 1)
         
@@ -292,20 +305,30 @@ def analyze_stats(df, cfg):
 # --- 7. 介面主程式 ---
 
 with st.sidebar:
-    st.title("🎛️ 總控中心 v15.0")
+    st.title("🎛️ 總控中心 v16.1")
     selected_game = st.selectbox("選擇彩種", list(GAME_CONFIG.keys()), index=0)
-    
     st.markdown("---")
-    st.subheader("📂 補檔案 (臨時)")
-    uploaded_files = st.file_uploader("拖曳 CSV 檔至此", accept_multiple_files=True, type=['csv'])
+    
+    st.subheader("📂 補檔案")
+    uploaded_files = st.file_uploader("拖曳 ZIP/CSV 至此", accept_multiple_files=True, type=['csv', 'zip'])
+    
     if uploaded_files:
         if st.button("📥 確認匯入"):
             with st.spinner("處理中..."):
-                res = process_bulk_files(uploaded_files)
+                processed_count = 0
+                for up_file in uploaded_files:
+                    if up_file.name.endswith('.zip'):
+                        with zipfile.ZipFile(up_file, 'r') as zip_ref:
+                            zip_ref.extractall(DATA_DIR)
+                        processed_count += 1
+                    else:
+                        process_bulk_files([up_file])
+                        processed_count += 1
                 load_all_data.clear()
-                st.success("匯入完成！")
+                st.success(f"處理完成！共處理 {processed_count} 個檔案/壓縮包。")
+                time.sleep(1)
                 st.rerun()
-                
+
     st.markdown("---")
     if st.button("🚀 每日補單 (i539)"):
         with st.spinner("更新中..."):
@@ -322,7 +345,7 @@ cfg = GAME_CONFIG[selected_game]
 st.header(f"📊 {selected_game} 戰情紀錄系統")
 
 if df.empty:
-    st.error("資料庫空白。")
+    st.error("資料庫空白。請在 GitHub 上傳 data.zip 或 CSV。")
 else:
     avg_std = analyze_stats(df, cfg)
     last_draw = df.iloc[-1][cfg["cols"][1:cfg["num_count"]+1]].tolist()
@@ -330,7 +353,6 @@ else:
     
     has_miracle, m_params, m_pred, m_date = search_for_miracle_strategy(df, cfg)
 
-    # 如果有天選號碼，顯示在最上
     if has_miracle:
         st.markdown(f"""
         <div style="background:linear-gradient(90deg, #FFD700, #FF8C00);padding:20px;border-radius:15px;color:black;text-align:center;margin-bottom:25px;">
@@ -349,22 +371,16 @@ else:
         repeater_mode = c2.checkbox("啟用連莊", value=True)
         w_ratio = c3.slider("版路/近期權重", 0.0, 1.0, 0.6)
 
-        # 使用 session_state 來儲存運算結果，避免按儲存按鈕時消失
-        if 'last_candidates' not in st.session_state:
-            st.session_state['last_candidates'] = []
-        if 'last_game' not in st.session_state:
-            st.session_state['last_game'] = ""
+        if 'last_candidates' not in st.session_state: st.session_state['last_candidates'] = []
+        if 'last_game' not in st.session_state: st.session_state['last_game'] = ""
 
         if st.button("🎲 啟動運算", type="primary"):
             st.session_state['last_game'] = selected_game
-            
-            # --- 運算邏輯 ---
             num_cols = [c for c in cfg["cols"] if c.startswith("N")]
             df_nums = df[num_cols].apply(pd.to_numeric)
             mn, mx = cfg["num_range"]
             all_range = list(range(mn, mx+1))
             
-            # 版路
             drag_counts = pd.Series(0.0, index=all_range)
             data_matrix = df_nums.values
             for target_num in last_draw:
@@ -376,7 +392,6 @@ else:
                     drag_counts = drag_counts.add(counts, fill_value=0)
             prob_banlu = drag_counts / drag_counts.sum() if drag_counts.sum() > 0 else pd.Series(1/len(all_range), index=all_range)
             
-            # 近期
             freq_recent = pd.Series(df_nums.tail(30).values.flatten()).value_counts().sort_index().reindex(all_range, fill_value=0)
             prob_recent = (freq_recent + 0.1) / (freq_recent.sum() + 1)
             
@@ -389,13 +404,10 @@ else:
             candidates = []
             attempts = 0
             bar = st.progress(0)
-            
             last_draw_set = list(last_draw)
             
-            # 加入天選號碼到候選名單 (如果有的話)
             if has_miracle:
                 hit_rep_m = set(m_pred).intersection(set(last_draw_set))
-                # 計算天選號碼的標準差誤差
                 curr_std_m = np.std(m_pred, ddof=1)
                 err_m = abs(curr_std_m - avg_std)
                 candidates.append({'n': m_pred, 'e': err_m, 'r': list(hit_rep_m), 'note': '天選號碼'})
@@ -405,16 +417,13 @@ else:
                 if repeater_mode:
                     rep = np.random.choice(last_draw_set, 1, replace=False).tolist()
                     selection.extend(rep)
-                
                 needed = cfg["num_count"] - len(selection)
                 temp_pool = [n for n in numbers if n not in selection]
                 temp_probs = [final_prob[n] for n in temp_pool]
                 temp_probs = np.array(temp_probs) / sum(temp_probs)
-                
                 others = np.random.choice(temp_pool, needed, replace=False, p=temp_probs).tolist()
                 selection.extend(others)
                 selection.sort()
-                
                 curr_std = np.std(selection, ddof=1)
                 if abs(curr_std - avg_std) <= tol:
                     if not any(x['n'] == selection for x in candidates):
@@ -425,11 +434,9 @@ else:
             bar.empty()
             st.session_state['last_candidates'] = candidates
 
-        # 顯示結果 (從 session_state 讀取)
         if st.session_state['last_candidates']:
             res_candidates = st.session_state['last_candidates']
             cols_ui = st.columns(len(res_candidates))
-            
             for i, (col, res) in enumerate(zip(cols_ui, res_candidates)):
                 with col:
                     if res.get('note') == '天選號碼':
@@ -438,12 +445,9 @@ else:
                     else:
                         st.markdown(f"**第 {i+1} 組**")
                         st.code(str(res['n']))
-                    
                     st.caption(f"誤差: {res['e']:.3f}")
                     if res['r']: st.caption(f"連莊: {res['r']}")
-            
             st.divider()
-            # 存檔按鈕
             if st.button("💾 儲存本次預測紀錄", type="primary"):
                 save_prediction_log(st.session_state['last_game'], res_candidates)
                 st.success("✅ 已儲存至「預測歷史」分頁！")
@@ -451,27 +455,18 @@ else:
     with tab2:
         st.subheader("📝 您的歷史預測紀錄")
         df_log = load_prediction_log()
-        
         if not df_log.empty:
-            # 倒序顯示 (最新的在上面)
             df_log = df_log.sort_index(ascending=False)
-            
-            # 篩選遊戲
             filter_game = st.checkbox("只顯示目前選擇的彩種", value=True)
-            if filter_game:
-                df_show = df_log[df_log["Game"] == selected_game]
-            else:
-                df_show = df_log
-                
+            if filter_game: df_show = df_log[df_log["Game"] == selected_game]
+            else: df_show = df_log
             st.dataframe(df_show, use_container_width=True, height=500)
-            
             if st.button("🗑️ 清空所有紀錄"):
                 if os.path.exists(LOG_FILE):
                     os.remove(LOG_FILE)
                     st.success("紀錄已清空")
                     st.rerun()
-        else:
-            st.info("目前沒有儲存的紀錄。請在「AI 預測」頁面運算後按下儲存按鈕。")
+        else: st.info("目前沒有儲存的紀錄。")
 
     with tab3:
         st.dataframe(df, use_container_width=True)
