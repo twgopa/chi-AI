@@ -8,31 +8,28 @@ import urllib3
 from datetime import datetime
 import glob
 import time
-import altair as alt
 import zipfile
 
 # --- 1. 系統設定 ---
-st.set_page_config(page_title="台彩數據中心 v16.1 (強力讀取版)", page_icon="📂", layout="wide")
+st.set_page_config(page_title="台彩數據中心 v17.0 (診斷修復版)", page_icon="🩺", layout="wide")
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 2. 資料路徑與自動解壓 (v16.1 升級) ---
+# --- 2. 資料路徑與自動解壓 ---
 DATA_DIR = "data"
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-# 核心升級：自動搜尋目錄下所有的 .zip 檔案並解壓縮
-# 這樣您可以上傳 data1.zip, data2.zip 分開傳，避開 25MB 限制
+# 自動掃描並解壓 ZIP
 zip_files = glob.glob("*.zip") + glob.glob(os.path.join(DATA_DIR, "*.zip"))
-
 for z_file in zip_files:
     try:
-        # 檢查是否已經解壓過 (簡單判斷：如果 zip 很大，但資料夾是空的)
-        # 這裡我們採取「每次啟動嘗試解壓」策略，因為 Streamlit Cloud 重啟後是乾淨的
-        with zipfile.ZipFile(z_file, 'r') as zip_ref:
-            zip_ref.extractall(DATA_DIR)
-            print(f"成功解壓縮: {z_file}")
-    except Exception as e:
-        print(f"解壓縮失敗 {z_file}: {e}")
+        if zipfile.is_zipfile(z_file):
+            # 檢查是否已解壓過 (簡單檢查: 如果 data 裡只有 zip 沒 csv，就解壓)
+            csv_check = glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)
+            if len(csv_check) < 5: # 假設檔案太少就是沒解壓
+                with zipfile.ZipFile(z_file, 'r') as zip_ref:
+                    zip_ref.extractall(DATA_DIR)
+    except: pass
 
 LOG_FILE = os.path.join(DATA_DIR, "prediction_log.csv")
 
@@ -64,7 +61,7 @@ GAME_CONFIG = {
     },
 }
 
-# --- 4. 基礎資料讀取與爬蟲 ---
+# --- 4. 強力資料讀取 (v17 核心修復) ---
 
 def detect_game_type(filename, df_head):
     filename = filename.lower()
@@ -83,6 +80,11 @@ def process_bulk_files(uploaded_files):
     
     for up_file in uploaded_files:
         try:
+            if up_file.name.endswith('.zip'):
+                with zipfile.ZipFile(up_file, 'r') as z:
+                    z.extractall(DATA_DIR)
+                continue
+
             try: df = pd.read_csv(up_file, encoding='cp950')
             except: 
                 try: df = pd.read_csv(up_file, encoding='big5')
@@ -120,54 +122,94 @@ def process_bulk_files(uploaded_files):
 
 @st.cache_data(show_spinner=False, ttl=60)
 def load_all_data(game_name):
-    if game_name not in GAME_CONFIG: return pd.DataFrame()
+    if game_name not in GAME_CONFIG: return pd.DataFrame(), []
     cfg = GAME_CONFIG[game_name]
     
-    # 遞迴讀取所有 CSV
     all_files = glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)
     merged_data = []
+    debug_log = [] # 紀錄讀取狀態
     
     target_files = [f for f in all_files if "prediction_log.csv" not in f]
+    target_files.sort() # 排序，讓顯示整齊
 
     for file_path in target_files:
         filename = os.path.basename(file_path)
-        # 簡單過濾：檔名包含關鍵字，且不包含 "賓果" (排除大檔案)
+        
+        # 只處理相關檔案
         if any(k in filename for k in cfg["keywords"]) and "賓果" not in filename:
+            file_status = {"file": filename, "status": "OK", "rows": 0}
             try:
-                try: df = pd.read_csv(file_path, encoding='cp950')
+                # 多重編碼嘗試
+                try: df = pd.read_csv(file_path, encoding='cp950', on_bad_lines='skip')
                 except: 
-                    try: df = pd.read_csv(file_path, encoding='utf-8')
-                    except: continue
+                    try: df = pd.read_csv(file_path, encoding='big5', on_bad_lines='skip')
+                    except: 
+                        try: df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
+                        except: 
+                            file_status["status"] = "❌ 編碼錯誤 (無法讀取)"
+                            debug_log.append(file_status)
+                            continue
                 
-                df.columns = [c.strip() for c in df.columns]
+                # 清理欄位
+                df.columns = [str(c).strip() for c in df.columns]
                 
+                # 格式 A: 官方 CSV
                 if '開獎日期' in df.columns:
+                    current_file_data = []
                     for _, row in df.iterrows():
                         try:
-                            d_str = pd.to_datetime(str(row['開獎日期']).strip()).strftime('%Y-%m-%d')
-                            nums = [int(row[f'獎號{i}']) for i in range(1, cfg["num_count"] + 1)]
+                            # 強力日期解析 (支援 2007/1/1 這種非補零格式)
+                            d_raw = str(row['開獎日期']).strip()
+                            d_str = pd.to_datetime(d_raw).strftime('%Y-%m-%d')
+                            
+                            nums = []
+                            for k in range(1, cfg["num_count"] + 1):
+                                col_name = f'獎號{k}'
+                                if col_name in df.columns:
+                                    nums.append(int(row[col_name]))
+                            
+                            if len(nums) != cfg["num_count"]: continue
+
                             sp = []
                             if cfg["has_special"]:
                                 if "第二區" in df.columns: sp = [int(row['第二區'])]
                                 elif "特別號" in df.columns: sp = [int(row['特別號'])]
+                            
                             if cfg["enable_predict"]: nums.sort()
                             entry = [d_str] + nums + sp + ["Official"]
-                            if len(entry) == len(cfg["cols"]): merged_data.append(entry)
+                            
+                            if len(entry) == len(cfg["cols"]): 
+                                current_file_data.append(entry)
                         except: continue
+                    
+                    merged_data.extend(current_file_data)
+                    file_status["rows"] = len(current_file_data)
+                    if len(current_file_data) == 0:
+                         file_status["status"] = "⚠️ 欄位符合但無有效資料"
+
+                # 格式 B: 系統 CSV
                 elif 'Date' in df.columns:
                     valid_cols = [c for c in cfg["cols"] if c in df.columns]
                     temp_df = df[valid_cols].copy()
                     if "Source" not in temp_df.columns: temp_df["Source"] = "Auto"
-                    for _, row in temp_df.iterrows():
-                        if len(row) == len(cfg["cols"]): merged_data.append(row.tolist())
-            except: continue
+                    data_list = temp_df.values.tolist()
+                    merged_data.extend(data_list)
+                    file_status["rows"] = len(data_list)
+                
+                else:
+                    file_status["status"] = "⚠️ 略過 (欄位不符)"
+
+            except Exception as e:
+                file_status["status"] = f"❌ 錯誤: {str(e)}"
+            
+            debug_log.append(file_status)
 
     if merged_data:
         final_df = pd.DataFrame(merged_data, columns=cfg["cols"])
         final_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
         final_df.sort_values(by='Date', ascending=True, inplace=True)
-        return final_df
-    return pd.DataFrame(columns=cfg["cols"])
+        return final_df, debug_log
+    return pd.DataFrame(columns=cfg["cols"]), debug_log
 
 def crawl_daily_web(game_name):
     if game_name not in GAME_CONFIG: return 0
@@ -210,29 +252,17 @@ def crawl_daily_web(game_name):
         return len(new_rows)
     return 0
 
-# --- 5. 紀錄存檔模組 ---
-
+# --- 5. AI & 紀錄 (維持不變) ---
 def save_prediction_log(game_name, candidates):
     log_data = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     for i, cand in enumerate(candidates):
         nums_str = ", ".join([f"{n:02d}" for n in cand['n']])
-        row = {
-            "Timestamp": timestamp,
-            "Game": game_name,
-            "Set_ID": f"第 {i+1} 組",
-            "Numbers": nums_str,
-            "Error": f"{cand['e']:.4f}",
-            "Hit_Repeats": str(cand.get('r', [])),
-            "Note": cand.get('note', '')
-        }
+        row = {"Timestamp": timestamp, "Game": game_name, "Set_ID": f"第 {i+1} 組", "Numbers": nums_str, "Error": f"{cand['e']:.4f}", "Hit_Repeats": str(cand.get('r', [])), "Note": cand.get('note', '')}
         log_data.append(row)
-    
     df_log = pd.DataFrame(log_data)
     if os.path.exists(LOG_FILE):
-        try:
-            old_log = pd.read_csv(LOG_FILE)
-            df_final = pd.concat([old_log, df_log], ignore_index=True)
+        try: old = pd.read_csv(LOG_FILE); df_final = pd.concat([old, df_log], ignore_index=True)
         except: df_final = df_log
     else: df_final = df_log
     df_final.to_csv(LOG_FILE, index=False, encoding='utf-8-sig')
@@ -243,8 +273,6 @@ def load_prediction_log():
         except: return pd.DataFrame()
     return pd.DataFrame()
 
-# --- 6. AI 演算法 ---
-
 def search_for_miracle_strategy(df, cfg, search_depth=50):
     if len(df) < search_depth + 10: return False, None, None, None
     num_cols = [c for c in cfg["cols"] if c.startswith("N")]
@@ -252,7 +280,6 @@ def search_for_miracle_strategy(df, cfg, search_depth=50):
     param_space = [(0.8, 0.2, 0.12), (0.5, 0.5, 0.15), (0.2, 0.8, 0.18), (0.9, 0.1, 0.10)]
     mn, mx = cfg["num_range"]
     all_range = list(range(mn, mx+1))
-    
     for i in range(len(df)-1, len(df)-search_depth-1, -1):
         target_draw = set(df_nums.iloc[i].values)
         train_data = df_nums.iloc[:i]
@@ -270,7 +297,6 @@ def search_for_miracle_strategy(df, cfg, search_depth=50):
         prob_banlu = drag_counts / drag_counts.sum() if drag_counts.sum() > 0 else pd.Series(1/len(all_range), index=all_range)
         freq_recent = pd.Series(train_data.tail(30).values.flatten()).value_counts().sort_index().reindex(all_range, fill_value=0)
         prob_recent = (freq_recent + 0.1) / (freq_recent.sum() + 1)
-        
         for params in param_space:
             w_banlu, w_recent, tol = params
             final_prob = (prob_banlu * w_banlu) + (prob_recent * w_recent)
@@ -305,27 +331,35 @@ def analyze_stats(df, cfg):
 # --- 7. 介面主程式 ---
 
 with st.sidebar:
-    st.title("🎛️ 總控中心 v16.1")
+    st.title("🎛️ 總控中心 v17.0")
     selected_game = st.selectbox("選擇彩種", list(GAME_CONFIG.keys()), index=0)
-    st.markdown("---")
     
+    st.markdown("---")
+    # 這裡新增了「檔案診斷室」
+    with st.expander("📁 檔案診斷室 (File Doctor)"):
+        st.caption("檢查系統是否有讀取到您的歷史檔案")
+        
+        # 重新讀取資料 (含診斷日誌)
+        df, debug_log = load_all_data(selected_game)
+        
+        if debug_log:
+            for log in debug_log:
+                if log["status"] == "OK":
+                    st.markdown(f"✅ **{log['file']}**: 讀取 {log['rows']} 筆")
+                else:
+                    st.markdown(f"{log['status']} (**{log['file']}**)")
+        else:
+            st.info("尚未掃描到任何相關檔案。")
+
+    st.markdown("---")
     st.subheader("📂 補檔案")
     uploaded_files = st.file_uploader("拖曳 ZIP/CSV 至此", accept_multiple_files=True, type=['csv', 'zip'])
-    
     if uploaded_files:
         if st.button("📥 確認匯入"):
             with st.spinner("處理中..."):
-                processed_count = 0
-                for up_file in uploaded_files:
-                    if up_file.name.endswith('.zip'):
-                        with zipfile.ZipFile(up_file, 'r') as zip_ref:
-                            zip_ref.extractall(DATA_DIR)
-                        processed_count += 1
-                    else:
-                        process_bulk_files([up_file])
-                        processed_count += 1
+                processed_count = process_bulk_files(uploaded_files)
                 load_all_data.clear()
-                st.success(f"處理完成！共處理 {processed_count} 個檔案/壓縮包。")
+                st.success(f"匯入完成！")
                 time.sleep(1)
                 st.rerun()
 
@@ -339,14 +373,20 @@ with st.sidebar:
                 st.rerun()
             else: st.info("無新資料")
 
-df = load_all_data(selected_game)
 cfg = GAME_CONFIG[selected_game]
 
 st.header(f"📊 {selected_game} 戰情紀錄系統")
 
 if df.empty:
-    st.error("資料庫空白。請在 GitHub 上傳 data.zip 或 CSV。")
+    st.error("⚠️ 資料庫空白。")
+    st.info("請展開左側的 **「📁 檔案診斷室」** 檢查是否有看到您的 CSV 檔案。")
 else:
+    # 顯示資料區間
+    c1, c2, c3 = st.columns(3)
+    c1.metric("總資料筆數", f"{len(df)} 期")
+    c2.metric("最早日期", df.iloc[0]['Date'])
+    c3.metric("最新日期", df.iloc[-1]['Date'])
+
     avg_std = analyze_stats(df, cfg)
     last_draw = df.iloc[-1][cfg["cols"][1:cfg["num_count"]+1]].tolist()
     last_draw = [int(x) for x in last_draw]
