@@ -14,15 +14,15 @@ import altair as alt
 
 # --- 1. 系統設定 ---
 st.set_page_config(
-    page_title="台彩數據中心 v24.1", 
+    page_title="台彩數據中心 v24.2", 
     page_icon="🕰️", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 2. CSS 視覺美化 ---
-st.markdown("""
+# --- 2. CSS 視覺美化 (不使用 f-string 避免錯誤) ---
+css_code = """
 <style>
     .stApp {
         background-color: #f0f7f4;
@@ -60,7 +60,8 @@ st.markdown("""
         color: #880e4f; margin-bottom: 20px;
     }
 </style>
-""", unsafe_allow_html=True)
+"""
+st.markdown(css_code, unsafe_allow_html=True)
 
 # --- 3. 資料結構 ---
 DATA_DIR = "data"
@@ -244,23 +245,19 @@ def crawl_daily_web(game_name):
             if not match: continue
             d_str = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
             if d_str < "2025-01-01": continue
-            
             clean = line.replace(match.group(0), "")
             all_n = [int(n) for n in re.findall(r'\b\d{1,2}\b', clean)]
             valid_n, sp_n = [], []
-            
             if game_name == "今彩539": valid_n = sorted([n for n in all_n if 1<=n<=39])[:5]
             elif game_name == "大樂透":
                 t = [n for n in all_n if 1<=n<=49]
                 if len(t)>=7: valid_n = sorted(t[:6]); sp_n = [t[6]]
             elif game_name == "威力彩":
                 if len(all_n)>=7: valid_n = sorted([n for n in all_n[:6] if 1<=n<=38]); sp_n = [all_n[6]] if 1<=all_n[6]<=8 else [1]
-            
             if len(valid_n) == cfg["num_count"]:
                 entry = [d_str] + valid_n + sp_n + ["Web_Crawl"]
                 if len(entry) == len(cfg["cols"]): new_rows.append(entry)
     except: pass
-    
     if new_rows:
         filename = f"Daily_Patch_{game_name}.csv"
         path = os.path.join(DATA_DIR, filename)
@@ -366,7 +363,7 @@ def find_sniper_strategy(df, cfg, search_depth=60):
 # --- 7. 介面主程式 ---
 
 with st.sidebar:
-    st.title("🎛️ 總控中心 v24.1")
+    st.title("🎛️ 總控中心 v24.2")
     selected_game = st.selectbox("選擇彩種", list(GAME_CONFIG.keys()), index=0)
     now = datetime.now()
     if now.hour >= 17: st.info(f"🔔 17:00 後請按下方補單")
@@ -403,9 +400,108 @@ else:
     with st.spinner("正在進行 18 年歷史大數據比對..."):
         has_mirror, mirror_date, mirror_next_nums = find_historical_mirror(df, cfg)
     
+    # 修復處：不使用 f-string 多行字串，改用變數拼接
     if has_mirror:
-        st.markdown(f"""
-        <div class="mirror-alert">
-            <h3>⚡ 驚人發現！歷史重現！</h3>
-            <p>本期開出的號碼，與 <b>{mirror_date}</b> 的開獎結果 <b>完全相同</b>！<br>
-            根據歷史紀錄，當年的下一期開出了以下號碼，具有極高的參考價值：
+        mirror_html = (
+            '<div class="mirror-alert">'
+            '<h3>⚡ 驚人發現！歷史重現！</h3>'
+            f'<p>本期開出的號碼，與 <b>{mirror_date}</b> 的開獎結果 <b>完全相同</b>！<br>'
+            '根據歷史紀錄，當年的下一期開出了以下號碼，具有極高的參考價值：</p>'
+            f'<h2 style="color:#d32f2f;">{mirror_next_nums}</h2>'
+            '</div>'
+        )
+        st.markdown(mirror_html, unsafe_allow_html=True)
+    else:
+        st.info("🔍 歷史比對完成：本期號碼組合為歷史首見，無完全重合紀錄。")
+
+    snipers = find_sniper_strategy(df, cfg, search_depth=50)
+    sniper_mode = "balanced"
+    sniper_tol = 0.15
+    if snipers:
+        best_s = snipers[0]
+        sniper_mode = best_s['mode']
+        sniper_tol = best_s['tol']
+        st.success(f"🎯 **狙擊參數**：[{best_s['mode'].upper()}] 策略曾在 {best_s['date']} 命中 {best_s['hits']} 星！")
+
+    tab1, tab2, tab3 = st.tabs(["🎲 彩球預測", "📜 預測紀錄", "📂 歷史資料"])
+
+    with tab1:
+        c1, c2 = st.columns(2)
+        tol = c1.slider("誤差值", 0.01, 0.5, sniper_tol, 0.01)
+        repeater = c2.checkbox("連莊慣性", value=True)
+
+        if st.button("🎲 啟動運算", type="primary"):
+            candidates = []
+            if has_mirror:
+                curr_std = np.std(mirror_next_nums, ddof=1)
+                err = abs(curr_std - avg_std)
+                candidates.append({'n': mirror_next_nums, 'e': err, 'type': f"鏡像 ({mirror_date})"})
+            
+            templates = [
+                {"name": f"狙擊 ({sniper_mode})", "mode": sniper_mode},
+                {"name": f"狙擊 ({sniper_mode})", "mode": sniper_mode},
+                {"name": "順勢 (Trend)", "mode": "trend"},
+                {"name": "順勢 (Trend)", "mode": "trend"},
+                {"name": "版路 (Drag)", "mode": "banlu"},
+                {"name": "版路 (Drag)", "mode": "banlu"}
+            ]
+            
+            bar = st.progress(0)
+            for i, temp in enumerate(templates):
+                probs = calculate_weights(df, cfg, temp["mode"])
+                numbers = probs.index.tolist()
+                p_vals = probs.values
+                att = 0
+                found = False
+                while not found and att < 5000:
+                    sel = sorted(np.random.choice(numbers, cfg["num_count"], replace=False, p=p_vals))
+                    if repeater:
+                        last_draw = df_nums.iloc[-1].values
+                        rep_num = np.random.choice(last_draw)
+                        if rep_num not in sel:
+                            sel[0] = rep_num
+                            sel.sort()
+                    curr_std = np.std(sel, ddof=1)
+                    if abs(curr_std - avg_std) <= tol:
+                        candidates.append({'n': sel, 'e': abs(curr_std - avg_std), 'type': temp["name"]})
+                        found = True
+                    att += 1
+                bar.progress((i + 1) / len(templates))
+            bar.empty()
+            st.session_state[f'last_candidates_{selected_game}'] = candidates
+
+        sess_key = f'last_candidates_{selected_game}'
+        if sess_key in st.session_state and st.session_state[sess_key]:
+            results = st.session_state[sess_key]
+            all_nums = []
+            for res in results: all_nums.extend(res['n'])
+            counter = collections.Counter(all_nums)
+            
+            st.markdown("### 🎨 預測結果")
+            st.caption("⚪1次 🟢2次 🔵3次 🟡4次 🔴5次 👑6次")
+            
+            cols = st.columns(3)
+            for i, res in enumerate(results):
+                with cols[i % 3]:
+                    html = f'<div class="stCard"><h5>{res["type"]}</h5>'
+                    html += render_prediction_row(res['n'], counter)
+                    html += f'<div style="font-size:12px;color:#888;margin-top:5px">誤差: {res["e"]:.4f}</div></div>'
+                    st.markdown(html, unsafe_allow_html=True)
+            
+            st.divider()
+            if st.button("💾 存入獨立紀錄"):
+                save_prediction(selected_game, results)
+                st.success(f"已存入 {cfg['pred_file']}")
+
+    with tab2:
+        df_pred = load_predictions(selected_game)
+        if not df_pred.empty:
+            df_pred = df_pred.sort_index(ascending=False)
+            st.dataframe(df_pred, use_container_width=True)
+            if st.button("🗑️ 清空此遊戲紀錄"):
+                if os.path.exists(cfg["pred_file"]): os.remove(cfg["pred_file"])
+                st.rerun()
+        else: st.info("無紀錄")
+
+    with tab3:
+        st.dataframe(df, use_container_width=True)
