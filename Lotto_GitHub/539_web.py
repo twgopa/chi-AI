@@ -14,8 +14,8 @@ import altair as alt
 
 # --- 1. 系統設定 ---
 st.set_page_config(
-    page_title="台彩數據中心 v26.0 (資料庫重構版)", 
-    page_icon="🏗️", 
+    page_title="台彩數據中心 v26.1", 
+    page_icon="🛡️", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -92,16 +92,13 @@ GAME_CONFIG = {
     }
 }
 
-# --- 4. 核心功能：日期處理與遊戲辨識 ---
+# --- 4. 核心功能 ---
 
 def parse_date(date_val):
-    """強力日期解析，支援民國年與西元年"""
     d_str = str(date_val).strip()
     try:
-        # 嘗試標準格式 YYYY/MM/DD or YYYY-MM-DD
         return pd.to_datetime(d_str).strftime('%Y-%m-%d')
     except:
-        # 嘗試民國年 (e.g., 96/01/01)
         match = re.match(r'(\d{2,3})[/-](\d{1,2})[/-](\d{1,2})', d_str)
         if match:
             year = int(match.group(1))
@@ -112,75 +109,52 @@ def parse_date(date_val):
     return None
 
 def detect_game_type(filename, df_head):
-    """判斷檔案屬於哪種遊戲"""
     filename = filename.lower()
-    # 1. 優先看內容 (有些檔名是亂碼)
     if '遊戲名稱' in df_head.columns:
         val = str(df_head.iloc[0]['遊戲名稱'])
         for game in GAME_CONFIG.keys():
             if game in val: return game
-            
-    # 2. 再看檔名
     for game, cfg in GAME_CONFIG.items():
         for kw in cfg["keywords"]:
             if kw.lower() in filename: return game
     return None
 
-# --- 5. 資料庫重整引擎 (核心修復邏輯) ---
-
 def rebuild_databases():
-    """
-    暴力掃描 data 資料夾下所有 CSV，重新歸類並建立主資料庫
-    """
-    st.toast("🏗️ 開始掃描並重整所有資料庫...")
-    
-    # 準備暫存區
+    """全域重整引擎"""
+    st.toast("🏗️ 開始重整資料庫...")
     storage = {g: [] for g in GAME_CONFIG.keys()}
     file_count = 0
     
-    # 1. 解壓所有 ZIP
+    # 解壓
     zip_files = glob.glob(os.path.join(DATA_DIR, "*.zip")) + glob.glob("*.zip")
     for z in zip_files:
         try:
-            with zipfile.ZipFile(z, 'r') as zip_ref:
-                zip_ref.extractall(DATA_DIR)
+            with zipfile.ZipFile(z, 'r') as zip_ref: zip_ref.extractall(DATA_DIR)
         except: pass
 
-    # 2. 遞迴搜尋所有 CSV (包含 data/2007/, data/2008/ 等子目錄)
     all_csv = glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)
-    
-    # 排除主資料庫本身，避免重複讀取
     db_filenames = [os.path.basename(cfg['db_file']) for cfg in GAME_CONFIG.values()]
     target_files = [f for f in all_csv if os.path.basename(f) not in db_filenames and "pred_" not in f]
     
-    progress_bar = st.progress(0)
-    
+    prog = st.progress(0)
     for i, file_path in enumerate(target_files):
-        progress_bar.progress((i + 1) / len(target_files), text=f"處理中: {os.path.basename(file_path)}")
-        
+        prog.progress((i + 1) / len(target_files), text=f"處理: {os.path.basename(file_path)}")
         try:
-            # 嘗試讀取
             try: df = pd.read_csv(file_path, encoding='cp950', on_bad_lines='skip')
             except: 
                 try: df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
                 except: continue
             
-            # 欄位清理
             df.columns = [str(c).strip() for c in df.columns]
-            
-            # 判斷遊戲
             game_type = detect_game_type(os.path.basename(file_path), df.head(1))
             if not game_type: continue
             
             cfg = GAME_CONFIG[game_type]
-            
-            # 解析資料
             if '開獎日期' in df.columns:
                 for _, row in df.iterrows():
                     try:
                         d_str = parse_date(row['開獎日期'])
                         if not d_str: continue
-                        
                         nums = []
                         for k in range(1, cfg["num_count"] + 1):
                             col = f'獎號{k}'
@@ -188,4 +162,53 @@ def rebuild_databases():
                         if len(nums) != cfg["num_count"]: continue
                         
                         sp = []
-                        if cfg["has_
+                        if cfg["has_special"]:
+                            if "第二區" in df.columns: sp = [int(row['第二區'])]
+                            elif "特別號" in df.columns: sp = [int(row['特別號'])]
+                            else: sp = [0]
+                        if cfg["enable_predict"]: nums.sort()
+                        entry = [d_str] + nums + sp + [os.path.basename(file_path)]
+                        if len(entry) == len(cfg["cols"]): storage[game_type].append(entry)
+                    except: continue
+            file_count += 1
+        except: continue
+    prog.empty()
+    
+    for game, rows in storage.items():
+        if rows:
+            cfg = GAME_CONFIG[game]
+            new_df = pd.DataFrame(rows, columns=cfg["cols"])
+            new_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
+            new_df.sort_values(by='Date', ascending=True, inplace=True)
+            new_df.to_csv(cfg["db_file"], index=False)
+            
+    return file_count, {g: len(r) for g, r in storage.items()}
+
+@st.cache_data(show_spinner=False, ttl=60)
+def load_db_data(game_name):
+    cfg = GAME_CONFIG[game_name]
+    if os.path.exists(cfg["db_file"]):
+        try: return pd.read_csv(cfg["db_file"])
+        except: return pd.DataFrame()
+    return pd.DataFrame()
+
+def crawl_daily_web(game_name):
+    cfg = GAME_CONFIG[game_name]
+    url = "https://i539.tw/"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    new_rows = []
+    try:
+        res = requests.get(url, headers=headers, verify=False, timeout=5)
+        res.encoding = 'utf-8'
+        lines = res.text.split('\n')
+        for line in lines:
+            if len(line) < 10: continue
+            match = re.search(r'(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})', line)
+            if not match: continue
+            d_str = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+            if d_str < "2025-01-01": continue
+            clean = line.replace(match.group(0), "")
+            all_n = [int(n) for n in re.findall(r'\b\d{1,2}\b', clean)]
+            valid_n, sp_n = [], []
+            if game_name == "今彩539": valid_n = sorted([n for n in all_n if 1<=n<=39])[:5]
+            elif game_name == "大樂透
