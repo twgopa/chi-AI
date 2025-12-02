@@ -13,8 +13,8 @@ import collections
 
 # --- 1. 系統設定 ---
 st.set_page_config(
-    page_title="台彩數據中心 v23.0", 
-    page_icon="🔮", 
+    page_title="台彩數據中心 v24.0", 
+    page_icon="🕰️", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -23,66 +23,49 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- 2. CSS 視覺美化 (淺綠水墨風 + 3D彩球) ---
 st.markdown("""
 <style>
-    /* 全站背景：淺綠水墨紙質感 */
     .stApp {
         background-color: #f0f7f4;
         background-image: url("https://www.transparenttextures.com/patterns/rice-paper-2.png");
         color: #2c3e50;
     }
-    
-    /* 側邊欄美化 */
     section[data-testid="stSidebar"] {
         background-color: #e8f5e9;
         border-right: 1px solid #c8e6c9;
     }
-    
-    /* 標題字型 */
     h1, h2, h3 {
         font-family: "Microsoft JhengHei", sans-serif;
         color: #1b5e20;
         font-weight: bold;
     }
-
-    /* 3D 彩球樣式基礎 */
     .lottery-ball {
-        display: inline-block;
-        width: 40px;
-        height: 40px;
-        line-height: 40px;
-        border-radius: 50%;
-        text-align: center;
-        font-weight: bold;
-        font-family: Arial, sans-serif;
-        margin: 4px;
-        box-shadow: inset -5px -5px 10px rgba(0,0,0,0.3), 2px 2px 5px rgba(0,0,0,0.2);
-        text-shadow: 1px 1px 2px rgba(0,0,0,0.5);
-        border: 1px solid rgba(0,0,0,0.1);
+        display: inline-block; width: 40px; height: 40px; line-height: 40px;
+        border-radius: 50%; text-align: center; font-weight: bold;
+        margin: 4px; box-shadow: inset -5px -5px 10px rgba(0,0,0,0.3), 2px 2px 5px rgba(0,0,0,0.2);
+        text-shadow: 1px 1px 2px rgba(0,0,0,0.5); border: 1px solid rgba(0,0,0,0.1);
     }
-
-    /* 顏色等級 (白綠藍黃紅金) */
     .ball-white { background: radial-gradient(circle at 30% 30%, #ffffff, #dcdcdc); color: #333; text-shadow: none; }
     .ball-green { background: radial-gradient(circle at 30% 30%, #66bb6a, #2e7d32); color: white; }
     .ball-blue  { background: radial-gradient(circle at 30% 30%, #42a5f5, #1565c0); color: white; }
     .ball-yellow{ background: radial-gradient(circle at 30% 30%, #ffee58, #fbc02d); color: #333; text-shadow: none;}
     .ball-red   { background: radial-gradient(circle at 30% 30%, #ef5350, #c62828); color: white; }
     .ball-gold  { background: radial-gradient(circle at 30% 30%, #ffd700, #ff8f00); color: white; border: 2px solid #fff; box-shadow: 0 0 10px #ffd700; }
-
-    /* 區塊卡片化 */
     .stCard {
-        background: rgba(255, 255, 255, 0.6);
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #c8e6c9;
-        margin-bottom: 10px;
+        background: rgba(255, 255, 255, 0.7); padding: 15px;
+        border-radius: 10px; border: 1px solid #c8e6c9; margin-bottom: 10px;
+    }
+    .mirror-alert {
+        background: linear-gradient(90deg, #ff9a9e 0%, #fad0c4 99%, #fad0c4 100%);
+        padding: 15px; border-radius: 10px; border: 2px solid #ff6b6b;
+        color: #880e4f; margin-bottom: 20px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. 資料結構與路徑 ---
+# --- 3. 資料結構 ---
 DATA_DIR = "data"
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
-# 自動解壓 (容錯)
+# 自動解壓
 zip_files = glob.glob("*.zip") + glob.glob(os.path.join(DATA_DIR, "*.zip"))
 for z_file in zip_files:
     try:
@@ -92,46 +75,43 @@ for z_file in zip_files:
                     zip_ref.extractall(DATA_DIR)
     except: pass
 
-# 遊戲設定 (新增 pred_file 欄位，實現預測紀錄獨立)
+# 遊戲設定
 GAME_CONFIG = {
     "今彩539": {
         "keywords": ["今彩539", "539"],
         "db_file": os.path.join(DATA_DIR, "db_539.csv"),
-        "pred_file": os.path.join(DATA_DIR, "pred_539.csv"), # 獨立預測檔
+        "pred_file": os.path.join(DATA_DIR, "pred_539.csv"),
         "num_count": 5, "num_range": (1, 39), "has_special": False, "enable_predict": True,
         "cols": ["Date", "N1", "N2", "N3", "N4", "N5", "Source"]
     },
     "大樂透": {
         "keywords": ["大樂透", "Lotto649"],
         "db_file": os.path.join(DATA_DIR, "db_lotto649.csv"),
-        "pred_file": os.path.join(DATA_DIR, "pred_lotto649.csv"), # 獨立預測檔
+        "pred_file": os.path.join(DATA_DIR, "pred_lotto649.csv"),
         "num_count": 6, "num_range": (1, 49), "has_special": True, "enable_predict": True,
         "cols": ["Date", "N1", "N2", "N3", "N4", "N5", "N6", "SP", "Source"]
     },
     "威力彩": {
         "keywords": ["威力彩", "SuperLotto"],
         "db_file": os.path.join(DATA_DIR, "db_super.csv"),
-        "pred_file": os.path.join(DATA_DIR, "pred_super.csv"), # 獨立預測檔
+        "pred_file": os.path.join(DATA_DIR, "pred_super.csv"),
         "num_count": 6, "num_range": (1, 38), "has_special": True, "enable_predict": True,
         "cols": ["Date", "N1", "N2", "N3", "N4", "N5", "N6", "Zw", "Source"]
     }
 }
 
-# --- 4. 核心函式庫 ---
+# --- 4. 核心函式 ---
 
 def get_ball_html(num, count):
-    """根據出現次數產生對應顏色的彩球 HTML"""
     if count >= 6: color_class = "ball-gold"
     elif count == 5: color_class = "ball-red"
     elif count == 4: color_class = "ball-yellow"
     elif count == 3: color_class = "ball-blue"
     elif count == 2: color_class = "ball-green"
     else: color_class = "ball-white"
-    
     return f'<div class="lottery-ball {color_class}">{num:02d}</div>'
 
 def render_prediction_row(nums, counts):
-    """渲染整排彩球"""
     html = ""
     for n in nums:
         c = counts.get(n, 1)
@@ -150,9 +130,7 @@ def detect_game_type(filename, df_head):
     return None
 
 def process_bulk_files(uploaded_files):
-    results = {g: 0 for g in GAME_CONFIG.keys()}
     temp_storage = {g: [] for g in GAME_CONFIG.keys()}
-    
     for up_file in uploaded_files:
         try:
             if up_file.name.endswith('.zip'):
@@ -178,7 +156,6 @@ def process_bulk_files(uploaded_files):
                         col = f'獎號{k}'
                         if col in df.columns: nums.append(int(row[col]))
                     if len(nums) != cfg["num_count"]: continue
-                    
                     sp = []
                     if cfg["has_special"]:
                         if "第二區" in df.columns: sp = [int(row['第二區'])]
@@ -195,8 +172,6 @@ def process_bulk_files(uploaded_files):
             cfg = GAME_CONFIG[game]
             new_filename = f"Upload_{game}_{int(time.time())}.csv"
             pd.DataFrame(rows, columns=cfg["cols"]).to_csv(os.path.join(DATA_DIR, new_filename), index=False)
-            results[game] += len(rows)
-    return results
 
 @st.cache_data(show_spinner=False, ttl=60)
 def load_all_data(game_name):
@@ -204,8 +179,6 @@ def load_all_data(game_name):
     cfg = GAME_CONFIG[game_name]
     all_files = glob.glob(os.path.join(DATA_DIR, "**", "*.csv"), recursive=True)
     merged_data = []
-    
-    # 排除所有預測檔 (pred_*.csv) 和 日誌檔
     target_files = [f for f in all_files if "pred_" not in os.path.basename(f) and "log" not in os.path.basename(f)]
 
     for file_path in target_files:
@@ -223,29 +196,24 @@ def load_all_data(game_name):
                 df.columns = [str(c).strip() for c in df.columns]
                 
                 if '開獎日期' in df.columns:
-                    temp_rows = []
                     for _, row in df.iterrows():
                         try:
                             d_str = pd.to_datetime(str(row['開獎日期']).strip()).strftime('%Y-%m-%d')
-                            nums = [int(row[f'獎號{i}']) for i in range(1, cfg["num_count"] + 1)]
+                            nums = sorted([int(row[f'獎號{i}']) for i in range(1, cfg["num_count"] + 1)])
                             if len(nums) != cfg["num_count"]: continue
                             sp = []
                             if cfg["has_special"]:
                                 if "第二區" in df.columns: sp = [int(row['第二區'])]
                                 elif "特別號" in df.columns: sp = [int(row['特別號'])]
                                 else: sp = [0]
-                            nums.sort()
                             entry = [d_str] + nums + sp + ["Official"]
-                            if len(entry) == len(cfg["cols"]): temp_rows.append(entry)
+                            if len(entry) == len(cfg["cols"]): merged_data.append(entry)
                         except: continue
-                    merged_data.extend(temp_rows)
-
                 elif 'Date' in df.columns:
                     valid_cols = [c for c in cfg["cols"] if c in df.columns]
                     temp_df = df[valid_cols].copy()
                     if "Source" not in temp_df.columns: temp_df["Source"] = "Auto"
-                    if len(temp_df.columns) == len(cfg["cols"]):
-                        merged_data.extend(temp_df.values.tolist())
+                    if len(temp_df.columns) == len(cfg["cols"]): merged_data.extend(temp_df.values.tolist())
             except: pass
 
     if merged_data:
@@ -266,4 +234,23 @@ def crawl_daily_web(game_name):
         res.encoding = 'utf-8'
         lines = res.text.split('\n')
         for line in lines:
-            if len(line)
+            if len(line) < 10: continue
+            match = re.search(r'(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})', line)
+            if not match: continue
+            d_str = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
+            if d_str < "2025-01-01": continue
+            clean = line.replace(match.group(0), "")
+            all_n = [int(n) for n in re.findall(r'\b\d{1,2}\b', clean)]
+            valid_n, sp_n = [], []
+            if game_name == "今彩539": valid_n = sorted([n for n in all_n if 1<=n<=39])[:5]
+            elif game_name == "大樂透":
+                t = [n for n in all_n if 1<=n<=49]
+                if len(t)>=7: valid_n = sorted(t[:6]); sp_n = [t[6]]
+            elif game_name == "威力彩":
+                if len(all_n)>=7: valid_n = sorted([n for n in all_n[:6] if 1<=n<=38]); sp_n = [all_n[6]] if 1<=all_n[6]<=8 else [1]
+            if len(valid_n) == cfg["num_count"]:
+                entry = [d_str] + valid_n + sp_n + ["Web_Crawl"]
+                if len(entry) == len(cfg["cols"]): new_rows.append(entry)
+    except: pass
+    if new_rows:
+        filename = f"Daily_Patch_{game_
