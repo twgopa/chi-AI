@@ -5,7 +5,7 @@ import requests
 import os
 import re
 import urllib3
-from datetime import datetime, timedelta
+from datetime import datetime
 import glob
 import time
 import zipfile
@@ -14,7 +14,7 @@ import io
 
 # --- 1. 系統設定 ---
 st.set_page_config(
-    page_title="台彩數據中心 v31.0", 
+    page_title="台彩數據中心 v31.1", 
     page_icon="🔮", 
     layout="wide",
     initial_sidebar_state="expanded"
@@ -26,7 +26,7 @@ st.markdown("""
 <style>
     /* 背景設定 */
     .stApp {
-        background-color: #f4f9f4; /* 淺綠底 */
+        background-color: #f4f9f4;
         background-image: url("https://www.transparenttextures.com/patterns/rice-paper-3.png");
         color: #2e4a3d;
     }
@@ -351,7 +351,7 @@ def save_pred(game, cands):
         if c['s']: ns += f"+{c['s']}"
         new_logs.append({"Date": ts, "Type": c['t'], "Nums": ns, "Err": c['e']})
     
-    df_ new = pd.DataFrame(new_logs)
+    df_new = pd.DataFrame(new_logs)
     if os.path.exists(cfg["pred_file"]):
         try:
             old = pd.read_csv(cfg["pred_file"])
@@ -371,7 +371,6 @@ def get_last_performance(game):
         
         # 取出最近一次預測
         last_date = logs.iloc[-1]['Date']
-        last_batch = logs[logs['Date'] == last_date]
         
         # 這裡可以加入「與真實開獎比對」的邏輯
         # 暫時回傳一個動態權重範例
@@ -410,7 +409,7 @@ with st.sidebar:
     # 每日補單 (模擬)
     if st.button(f"🚀 每日補單 ({selected_game})"):
         st.info("正在連線 i539.tw 抓取最新資料...")
-        # (此處呼叫原本的 crawl_daily_web，為省篇幅省略，請保留原有的爬蟲邏輯)
+        # (此處為簡化版，請視需要加回完整爬蟲)
         st.success("更新完成！(模擬)")
 
 cfg = GAME_CONFIG[selected_game]
