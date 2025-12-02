@@ -14,15 +14,15 @@ import altair as alt
 
 # --- 1. 系統設定 ---
 st.set_page_config(
-    page_title="台彩數據中心 v26.1", 
-    page_icon="🛡️", 
+    page_title="台彩數據中心 v26.2", 
+    page_icon="🎯", 
     layout="wide",
     initial_sidebar_state="expanded"
 )
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 2. CSS 視覺美化 ---
-css_code = """
+st.markdown("""
 <style>
     .stApp {
         background-color: #f0f7f4;
@@ -61,10 +61,9 @@ css_code = """
     }
     .zone-label { font-size: 12px; color: #666; margin-bottom: 4px; display: block; width: 100%; }
 </style>
-"""
-st.markdown(css_code, unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-# --- 3. 資料結構與設定 ---
+# --- 3. 資料結構 ---
 DATA_DIR = "data"
 if not os.path.exists(DATA_DIR): os.makedirs(DATA_DIR)
 
@@ -120,12 +119,10 @@ def detect_game_type(filename, df_head):
     return None
 
 def rebuild_databases():
-    """全域重整引擎"""
     st.toast("🏗️ 開始重整資料庫...")
     storage = {g: [] for g in GAME_CONFIG.keys()}
     file_count = 0
     
-    # 解壓
     zip_files = glob.glob(os.path.join(DATA_DIR, "*.zip")) + glob.glob("*.zip")
     for z in zip_files:
         try:
@@ -168,47 +165,4 @@ def rebuild_databases():
                             else: sp = [0]
                         if cfg["enable_predict"]: nums.sort()
                         entry = [d_str] + nums + sp + [os.path.basename(file_path)]
-                        if len(entry) == len(cfg["cols"]): storage[game_type].append(entry)
-                    except: continue
-            file_count += 1
-        except: continue
-    prog.empty()
-    
-    for game, rows in storage.items():
-        if rows:
-            cfg = GAME_CONFIG[game]
-            new_df = pd.DataFrame(rows, columns=cfg["cols"])
-            new_df.drop_duplicates(subset=['Date'], keep='last', inplace=True)
-            new_df.sort_values(by='Date', ascending=True, inplace=True)
-            new_df.to_csv(cfg["db_file"], index=False)
-            
-    return file_count, {g: len(r) for g, r in storage.items()}
-
-@st.cache_data(show_spinner=False, ttl=60)
-def load_db_data(game_name):
-    cfg = GAME_CONFIG[game_name]
-    if os.path.exists(cfg["db_file"]):
-        try: return pd.read_csv(cfg["db_file"])
-        except: return pd.DataFrame()
-    return pd.DataFrame()
-
-def crawl_daily_web(game_name):
-    cfg = GAME_CONFIG[game_name]
-    url = "https://i539.tw/"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    new_rows = []
-    try:
-        res = requests.get(url, headers=headers, verify=False, timeout=5)
-        res.encoding = 'utf-8'
-        lines = res.text.split('\n')
-        for line in lines:
-            if len(line) < 10: continue
-            match = re.search(r'(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})', line)
-            if not match: continue
-            d_str = f"{match.group(1)}-{match.group(2).zfill(2)}-{match.group(3).zfill(2)}"
-            if d_str < "2025-01-01": continue
-            clean = line.replace(match.group(0), "")
-            all_n = [int(n) for n in re.findall(r'\b\d{1,2}\b', clean)]
-            valid_n, sp_n = [], []
-            if game_name == "今彩539": valid_n = sorted([n for n in all_n if 1<=n<=39])[:5]
-            elif game_name == "大樂透
+                        if len(entry) == len(cfg["
